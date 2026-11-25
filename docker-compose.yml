@@ -1,0 +1,35 @@
+# Local infrastructure for the next stages:
+#   Postgres - the warehouse (stage 4)
+#   S3       - S3-compatible storage for raw files (stage 2)
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pipeline
+      POSTGRES_PASSWORD: pipeline
+      POSTGRES_DB: adtech
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pipeline -d adtech"]
+      interval: 5s
+      retries: 10
+
+  s3:
+    # S3-compatible storage for local development (same API as AWS S3).
+    # In production this is a real S3 bucket; only the endpoint changes.
+    image: adobe/s3mock:3.12.0
+    environment:
+      initialBuckets: raw
+      retainFilesOnExit: "true"
+      root: /data
+    ports:
+      - "9090:9090" # S3 API (HTTP)
+    volumes:
+      - s3data:/data
+
+volumes:
+  pgdata:
+  s3data:

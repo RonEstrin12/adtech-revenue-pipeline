@@ -1,0 +1,26 @@
+{
+  "name": "adtech-revenue-pipeline",
+  "version": "1.0.0",
+  "description": "Daily ad-revenue pipeline: partner APIs and files -> S3 raw -> Postgres -> QA, alerts and Google Sheets",
+  "scripts": {
+    "partner-a": "tsx --env-file=.env src/mock-partners/partner-a-server.ts",
+    "partner-b": "tsx src/mock-partners/partner-b-drop.ts",
+    "ingest": "tsx --env-file=.env src/ingest/index.ts",
+    "raw:ls": "tsx --env-file=.env src/tools/raw-ls.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1177.0",
+    "express": "^4.22.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/node": "^26.6.10",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

@@ -14,6 +14,8 @@ import {
 
 const endpoint = process.env.S3_ENDPOINT; // unset in production -> real AWS S3
 export const BUCKET = process.env.S3_BUCKET ?? "raw";
+/** Derived zone for validated output (stage 3), next to the raw partitions in the same bucket. */
+export const CLEAN_PREFIX = "clean/";
 
 export const s3 = new S3Client({
   region: process.env.S3_REGION ?? "us-east-1",
@@ -41,6 +43,15 @@ export async function listKeys(prefix: string): Promise<string[]> {
 export async function getText(key: string): Promise<string> {
   const res = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
   return (await res.Body?.transformToString("utf-8")) ?? "";
+}
+
+/**
+ * Write (or overwrite) an object at a fixed key. Only for derived zones such as clean/,
+ * where the same input must always land on the same key; never for the raw zone.
+ */
+export async function putText(key: string, body: string, contentType = "application/json"): Promise<void> {
+  if (!key.startsWith(CLEAN_PREFIX)) throw new Error(`putText only writes derived zones, refusing ${key}`);
+  await s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: body, ContentType: contentType }));
 }
 
 export interface RawPutResult {

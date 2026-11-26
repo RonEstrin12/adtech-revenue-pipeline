@@ -6,8 +6,13 @@
     "partner-a": "tsx --env-file=.env src/mock-partners/partner-a-server.ts",
     "partner-b": "tsx src/mock-partners/partner-b-drop.ts",
     "ingest": "tsx --env-file=.env src/ingest/index.ts",
+    "validate": "tsx --env-file=.env src/validate/index.ts",
+    "migrate": "tsx --env-file=.env src/tools/migrate.ts",
+    "load": "tsx --env-file=.env src/load/index.ts",
+    "report": "tsx --env-file=.env src/report/index.ts",
     "raw:ls": "tsx --env-file=.env src/tools/raw-ls.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "keywords": [],
   "author": "",
@@ -15,11 +20,13 @@
   "type": "module",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1177.0",
-    "express": "^4.22.3"
+    "express": "^4.22.3",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "@types/express": "^4.17.25",
     "@types/node": "^26.6.10",
+    "@types/pg": "^8.23.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }

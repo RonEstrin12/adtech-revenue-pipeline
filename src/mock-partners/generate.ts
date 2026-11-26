@@ -59,15 +59,3 @@ export function generateTraffic(date: string, partner: string, share: number): T
   }
   return rows;
 }
-
-/** Validates a YYYY-MM-DD string. */
-export function isIsoDate(value: unknown): value is string {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
-}
-
-/** Yesterday in YYYY-MM-DD (partners report the previous day). */
-export function yesterday(): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10);
-}

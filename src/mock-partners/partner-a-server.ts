@@ -7,8 +7,10 @@
  * Its own field names (day, site, unit, imps, rev_usd), revenue already in USD,
  * and a few deliberate problems for the pipeline to catch.
  */
+import { pathToFileURL } from "node:url";
 import express from "express";
-import { generateTraffic, isIsoDate } from "./generate.js";
+import { isIsoDate } from "../lib/dates.js";
+import { generateTraffic } from "./generate.js";
 
 const PORT = Number(process.env.PARTNER_A_PORT ?? 4001);
 const API_KEY = process.env.PARTNER_A_API_KEY ?? "dev-partner-a-key";
@@ -58,7 +60,10 @@ app.get("/api/v1/reports", (req, res) => {
   res.json({ partner: "A", date, count: data.length, data });
 });
 
-app.listen(PORT, () => {
-  console.log(`Partner A API listening on http://localhost:${PORT}`);
-  console.log(`Try: curl -H "x-api-key: ${API_KEY}" "http://localhost:${PORT}/api/v1/reports?date=2026-11-24"`);
-});
+// Listen only when run as a script, so tests can import buildPartnerAReport as a fixture.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  app.listen(PORT, () => {
+    console.log(`Partner A API listening on http://localhost:${PORT}`);
+    console.log(`Try: curl -H "x-api-key: ${API_KEY}" "http://localhost:${PORT}/api/v1/reports?date=2026-11-24"`);
+  });
+}

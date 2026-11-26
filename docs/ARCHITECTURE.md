@@ -59,7 +59,8 @@ Green is built, orange should be fixed before moving on, blue is next, and grey 
 | SQL analysis | `db/migrations/002_analysis_views.sql`, `src/report/` | ✅ Built | Views for daily totals, revenue and eCPM by partner, site and ad unit, partner day-over-day, and reject share; `npm run report` prints one day (query and formatting kept separate for stage 7) |
 | QA checks & alerts | `src/qa/`, `db/migrations/003_qa.sql` | ✅ Built | Pure checks over the stage 5 views (missing partner-day, reject share, day-over-day swing, zero totals) with env thresholds; results replace the date in `qa_results`; `npm run qa` exits non-zero on a fail; alerts as one GitHub Issue per date (comment if open, close on pass), sent only when `QA_ALERTS=github`, otherwise a dry run |
 | Google Sheets | `src/sheets/` | ✅ Built (dry run until connected) | `npm run sheets` writes `Daily`, `By partner`, `By site`, `By ad unit` tabs from `fetchDailyReport` plus the worst `qa_results` status; each run reads the tabs, replaces the date's rows, sorts by date and writes back in one request. Service-account JWT (RS256, `node:crypto`) + Sheets API v4 with `fetch`, no dependency. Google only when `SHEETS_MODE=google`; otherwise the same merge into `out/sheets/*.csv` |
-| Scheduler | `.github/workflows/` | ⏳ Stage 8 | Run the whole chain every day |
+| Scheduler | `.github/workflows/daily.yml` | ✅ Built | Run the whole chain every day (demo mode with job services until hosted secrets are set) |
+| CI | `.github/workflows/ci.yml` | ✅ Built | Typecheck and tests, including Postgres integration, on every PR |
 
 ## Canonical row (stage 3 output)
 
@@ -105,6 +106,9 @@ eCPM is `analysis_ecpm(revenue, impressions)` = `revenue * 1000 / NULLIF(impress
 4. ✅ **Stage 5: SQL analysis.** Re-runnable views in `002_analysis_views.sql` (eCPM `NULL` on 0 impressions, day-over-day against the previous calendar day, reject share) and `npm run report -- <date>`.
 5. ✅ **Stage 6: QA checks and alerts.** `npm run qa -- <date>` checks the day through `fetchDailyReport`, stores results in `qa_results` (`003_qa.sql`), and exits non-zero on a fail. Alerts are GitHub Issues (the user's choice) via the REST API with `fetch`, deduplicated by title, and only sent when `QA_ALERTS=github`.
 6. ✅ **Stage 7: Google Sheets.** `npm run sheets -- <date>` reuses `fetchDailyReport` and the worst `qa_results` status, and replaces the date's rows in four tabs (read, merge, write back). Service-account auth and the Sheets REST API with `fetch`, no dependency. A dry run to `out/sheets/*.csv` until `SHEETS_MODE=google` with `SHEETS_SPREADSHEET_ID` and `GOOGLE_SERVICE_ACCOUNT_JSON`.
-7. **Stage 8: daily schedule.** Needs hosted S3 and Postgres plus repository secrets. Runs the chain, then `npm run qa` with `QA_ALERTS=github` and `issues: write`, and `npm run sheets` with `SHEETS_MODE=google` and the key JSON as a secret, and uses the exit codes.
-
-The details listed for stage 8 are a proposal and may change as it is built.
+7. ✅ **Stage 8: daily schedule.**
+   - **`.github/workflows/daily.yml`** runs the whole chain at 05:00 UTC, or on demand with a date.
+     - Demo mode (default): Postgres and S3Mock run as job services, so the data doesn't persist between runs.
+     - Hosted mode: setting the `DATABASE_URL`, `S3_ENDPOINT` and AWS key secrets switches to hosted services without any code change.
+     - QA alerts are real GitHub Issues (`issues: write`). Sheets runs even when QA fails, and uploads the CSVs as an artifact until the Google secret is set.
+   - **`.github/workflows/ci.yml`** runs the typecheck and tests, including the Postgres integration suites, on every PR and on every push to master.

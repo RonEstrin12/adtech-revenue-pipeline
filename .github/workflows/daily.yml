@@ -1,0 +1,126 @@
+# Stage 8: run the whole pipeline once a day.
+#
+# Demo mode (default): Postgres and S3Mock run as services inside the job, so nothing
+# outside GitHub is needed, but the data is gone when the job ends. Day-over-day
+# therefore has no previous day to compare with.
+#
+# Hosted mode: set the repository secrets DATABASE_URL, S3_ENDPOINT, AWS_ACCESS_KEY_ID,
+# AWS_SECRET_ACCESS_KEY (and the variables S3_BUCKET / S3_REGION if they differ).
+# The job then uses them instead of the services, and data persists day to day.
+#
+# Google Sheets: set the secret GOOGLE_SERVICE_ACCOUNT_JSON (inline key JSON) and the
+# variable SHEETS_SPREADSHEET_ID. Without the secret, sheets runs as a dry run and the
+# CSVs are uploaded as a run artifact.
+name: Daily pipeline
+
+on:
+  schedule:
+    - cron: "0 5 * * *" # 05:00 UTC, after partners publish yesterday's reports
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Report date (YYYY-MM-DD). Empty = yesterday (UTC)."
+        required: false
+
+permissions:
+  contents: read
+  issues: write # QA alerts open, comment on and close issues
+
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pipeline
+          POSTGRES_PASSWORD: pipeline
+          POSTGRES_DB: adtech
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pipeline -d adtech"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      s3:
+        image: adobe/s3mock:3.12.0
+        env:
+          initialBuckets: raw
+        ports: ["9090:9090"]
+    env:
+      # Hosted values when the secrets exist, otherwise the services above.
+      DATABASE_URL: ${{ secrets.DATABASE_URL || 'postgres://pipeline:pipeline@localhost:5432/adtech' }}
+      S3_ENDPOINT: ${{ secrets.S3_ENDPOINT || 'http://localhost:9090' }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID || 'dev' }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY || 'dev' }}
+      S3_BUCKET: ${{ vars.S3_BUCKET || 'raw' }}
+      S3_REGION: ${{ vars.S3_REGION || 'us-east-1' }}
+      REPORT_TZ: UTC
+      # Stage 6: real GitHub Issue alerts. Set the variable QA_ALERTS to "off" to dry-run.
+      QA_ALERTS: ${{ vars.QA_ALERTS == 'off' && 'dry-run' || 'github' }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Stage 7: real sheet only when the key secret exists.
+      SHEETS_MODE: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON != '' && 'google' || '' }}
+      SHEETS_SPREADSHEET_ID: ${{ vars.SHEETS_SPREADSHEET_ID }}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Scripts use --env-file=.env; variables set above take precedence over it.
+      - run: cp .env.example .env
+
+      - name: Pick the report date
+        id: date
+        env:
+          INPUT_DATE: ${{ inputs.date }}
+        run: |
+          d="${INPUT_DATE:-$(date -u -d yesterday +%F)}"
+          echo "date=$d" >> "$GITHUB_OUTPUT"
+          echo "Report date: $d" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for S3
+        if: ${{ env.S3_ENDPOINT == 'http://localhost:9090' }}
+        run: for _ in $(seq 1 60); do curl -sf -o /dev/null http://localhost:9090 && exit 0; sleep 1; done; exit 1
+
+      # Mock partners stand in for the real ones until real integrations exist.
+      - name: Start partner A (mock API)
+        run: |
+          npm run partner-a > partner-a.log 2>&1 &
+          for _ in $(seq 1 30); do curl -s -o /dev/null http://localhost:4001 && exit 0; sleep 1; done
+          cat partner-a.log; exit 1
+      - name: Partner B drops its CSV (mock)
+        run: npm run partner-b -- ${{ steps.date.outputs.date }}
+
+      - name: Stage 2 · Ingest to S3 raw
+        run: npm run ingest -- ${{ steps.date.outputs.date }}
+      - name: Stage 3 · Validate and normalize
+        run: npm run validate -- ${{ steps.date.outputs.date }}
+      - name: Stage 4 · Migrate and load Postgres
+        id: load
+        run: |
+          npm run migrate
+          npm run load -- ${{ steps.date.outputs.date }}
+      - name: Stage 5 · Report
+        run: |
+          npm run report -- ${{ steps.date.outputs.date }} | tee report.txt
+          { echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Stage 6 · QA checks and alerts
+        run: npm run qa -- ${{ steps.date.outputs.date }}
+      # Runs even when QA failed, so the sheet still shows the day (with its QA status).
+      - name: Stage 7 · Google Sheets
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        run: npm run sheets -- ${{ steps.date.outputs.date }}
+      - name: Upload sheet CSVs (dry run)
+        if: ${{ !cancelled() && env.SHEETS_MODE != 'google' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sheets-${{ steps.date.outputs.date }}
+          path: out/sheets/
+          if-no-files-found: ignore

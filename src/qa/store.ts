@@ -3,7 +3,7 @@
  * A run replaces all of the date's results in one transaction, so re-runs are idempotent.
  */
 import { type Queryable, withTransaction } from "../lib/db.js";
-import type { QaResult } from "./checks.js";
+import type { QaResult, QaStatus } from "./checks.js";
 
 export const QA_SQL = {
   lock: "SELECT pg_advisory_xact_lock(hashtext('qa_results'), hashtext($1))",
@@ -22,4 +22,15 @@ export async function saveQaResults(client: Queryable, date: string, results: Qa
     const res = await client.query(QA_SQL.insert, [date, JSON.stringify(results)]);
     return res.rowCount ?? 0;
   });
+}
+
+export const QA_STATUS_SQL = `SELECT CASE WHEN bool_or(status = 'fail') THEN 'fail'
+                                         WHEN bool_or(status = 'warn') THEN 'warn'
+                                         ELSE 'pass' END AS status
+                              FROM qa_results WHERE date = $1 HAVING count(*) > 0`;
+
+/** The worst stored QA status for the date (fail > warn > pass), or null when QA has not run for it. */
+export async function fetchWorstQaStatus(db: Queryable, date: string): Promise<QaStatus | null> {
+  const { rows } = await db.query(QA_STATUS_SQL, [date]);
+  return (rows[0]?.status as QaStatus | undefined) ?? null;
 }

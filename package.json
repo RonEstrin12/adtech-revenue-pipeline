@@ -11,6 +11,7 @@
     "load": "tsx --env-file=.env src/load/index.ts",
     "report": "tsx --env-file=.env src/report/index.ts",
     "qa": "tsx --env-file=.env src/qa/index.ts",
+    "sheets": "tsx --env-file=.env src/sheets/index.ts",
     "raw:ls": "tsx --env-file=.env src/tools/raw-ls.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test \"src/**/*.test.ts\""

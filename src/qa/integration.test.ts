@@ -10,7 +10,7 @@ import { TEST_DATABASE_URL, postgresSkipReason } from "../lib/pg-test.js";
 import { fetchDailyReport } from "../report/query.js";
 import { type QaResult, runChecks } from "./checks.js";
 import { QA_DEFAULTS } from "./config.js";
-import { saveQaResults } from "./store.js";
+import { fetchWorstQaStatus, saveQaResults } from "./store.js";
 
 const SCHEMA = `test_qa_${process.pid}_${Date.now()}`;
 const D = "2026-11-25";
@@ -78,5 +78,16 @@ describe("qa_results (integration)", { skip }, () => {
     await assert.rejects(saveQaResults(client, "2026-11-20", [{ ...r, status: "maybe" as never }]), /qa_results_status_check/);
     await assert.rejects(saveQaResults(client, "2026-11-20", [r, r]), /qa_results_date_check_partner_idx/);
     assert.equal((await stored("2026-11-20")).length, 0);
+  });
+
+  it("fetchWorstQaStatus: worst stored status per date, null when QA has not run", async () => {
+    const r: QaResult = { check: "zero_totals", partner: null, status: "pass", message: "x", details: {} };
+    await saveQaResults(client, "2026-11-10", [r, { ...r, check: "reject_share", partner: "b", status: "warn" }]);
+    await saveQaResults(client, "2026-11-11", [r, { ...r, check: "reject_share", partner: "b", status: "warn" }, { ...r, check: "day_over_day", partner: "a", status: "fail" }]);
+    await saveQaResults(client, "2026-11-12", [r]);
+    assert.equal(await fetchWorstQaStatus(client, "2026-11-10"), "warn");
+    assert.equal(await fetchWorstQaStatus(client, "2026-11-11"), "fail");
+    assert.equal(await fetchWorstQaStatus(client, "2026-11-12"), "pass");
+    assert.equal(await fetchWorstQaStatus(client, "2026-11-13"), null);
   });
 });

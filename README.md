@@ -26,7 +26,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture and t
 | 4 | Idempotent load to Postgres | ✅ |
 | 5 | SQL analysis | ✅ |
 | 6 | QA checks and alerts | ✅ |
-| 7 | Google Sheets report | ⏳ |
+| 7 | Google Sheets report | ✅ |
 | 8 | Daily schedule with GitHub Actions | ⏳ |
 
 ## Quick start
@@ -68,8 +68,8 @@ All settings are environment variables in `.env`, which is git-ignored. `.env.ex
 | `AWS_ACCESS_KEY_ID` | ingest, validate, load, raw:ls | `dev` | S3 credentials (dummy for S3Mock) |
 | `AWS_SECRET_ACCESS_KEY` | ingest, validate, load, raw:ls | `dev` | S3 credentials (dummy for S3Mock) |
 | `FX_ILS_PER_USD` | validate | `3.7` | ⚠️ to confirm. Fixed ILS→USD rate in shekels per dollar (USD = ILS / rate) |
-| `REPORT_TZ` | ingest, validate, load, report, qa, mock partner B | `UTC` | ⚠️ to confirm. IANA timezone that decides "yesterday" when no date is given |
-| `DATABASE_URL` | migrate, load, report, qa | `postgres://pipeline:pipeline@localhost:5432/adtech` | Postgres connection. The standard `PG*` variables work instead |
+| `REPORT_TZ` | ingest, validate, load, report, qa, sheets, mock partner B | `UTC` | ⚠️ to confirm. IANA timezone that decides "yesterday" when no date is given |
+| `DATABASE_URL` | migrate, load, report, qa, sheets | `postgres://pipeline:pipeline@localhost:5432/adtech` | Postgres connection. The standard `PG*` variables work instead |
 | `QA_EXPECTED_PARTNERS` | qa | `a,b` | Comma-separated partners that must have rows every day |
 | `QA_WARN_REJECT_SHARE` | qa | `0.25` | Warn when a partner's rejected share of rows received is above this fraction |
 | `QA_MAX_REJECT_SHARE` | qa | `0.4` | Fail when a partner's rejected share is above this fraction |
@@ -78,6 +78,10 @@ All settings are environment variables in `.env`, which is git-ignored. `.env.ex
 | `QA_ALERTS` | qa | unset (dry run) | `github` sends alerts as GitHub Issues; anything else only prints the issue it would send |
 | `GITHUB_TOKEN` | qa | unset | Token with `issues: write`, used only when `QA_ALERTS=github`. Provided by GitHub Actions |
 | `GITHUB_REPOSITORY` | qa | unset | `owner/repo` for alert issues, used only when `QA_ALERTS=github`. Provided by GitHub Actions |
+| `SHEETS_MODE` | sheets | unset (dry run) | `google` writes the Google Sheet; unset (or `dry-run`) writes the tabs to local CSV files instead; anything else is an error |
+| `SHEETS_OUT_DIR` | sheets | `out/sheets` | Folder for the dry-run CSV files (git-ignored) |
+| `SHEETS_SPREADSHEET_ID` | sheets | unset | The ID in the sheet's URL (a pasted URL works too). Required when `SHEETS_MODE=google` |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | sheets | unset | Service account key: a path to the key file, or the key JSON itself (for a GitHub Actions secret). Required when `SHEETS_MODE=google` |
 
 ## The mock partners
 
@@ -243,7 +247,7 @@ Design decisions:
 - **Exact until display.** Money, eCPM and shares stay `NUMERIC` (eCPM and shares rounded to 6 decimals) and reach TypeScript as decimal strings; only the printer rounds to cents.
 - **Day over day means the previous calendar day.** `LAG` finds the partner's previous loaded day, but it only counts when it is exactly `date - 1`; after a gap, or on the first day, the change is `n/a`. The percentage is also `n/a` when the previous revenue was 0. A partner with no rows today has no row at all; that is a stage 6 QA check.
 - **Reject share of rows received.** `reject_share = rejected / (rejected + loaded)` for the partner-day, and `reason_share` is the same per reason. Shares are fractions (`0.2` = 20%).
-- **Data and printing are separate.** `src/report/query.ts` returns a typed `DailyReport`; `src/report/format.ts` turns it into text. Stage 7 will reuse the query for Google Sheets.
+- **Data and printing are separate.** `src/report/query.ts` returns a typed `DailyReport`; `src/report/format.ts` turns it into text. Stage 7 reuses the query for Google Sheets.
 - **Tests.** The formatter is unit-tested with injected rows. `src/report/integration.test.ts` inserts hand-written rows into a throwaway schema and checks every view against hand-computed values, including 0 impressions, a gap in the days, and a previous revenue of 0. It skips itself without Docker.
 
 ## Stage 6: QA checks and alerts
@@ -288,6 +292,60 @@ Design decisions:
 - **The first day is not a swing.** With no previous day (or after a gap) `day_over_day` passes and says so; a missing partner is caught by `missing_partner_day` instead.
 - **Exit code first, then alert.** Results are stored before alerting, and a failed alert also exits non-zero, so the scheduler notices either way.
 - **Tests.** Each check, with boundaries; the issue logic (create, comment on an open issue, close on pass, no alert on warnings, dry run) against a fake `fetch`; and `src/qa/integration.test.ts` for `qa_results` idempotency in a throwaway schema, skipped without Docker.
+
+## Stage 7: Google Sheets report
+
+```bash
+npm run sheets -- 2026-11-25      # defaults to yesterday, in REPORT_TZ
+```
+
+The run reads the day through `fetchDailyReport` (stage 5) and the worst status in `qa_results` (stage 6), and
+replaces that date's rows in four tabs. Each tab has a header row, then one row per date (and partner, site or
+ad unit), sorted by date, so the sheet is a growing table you can filter, chart or pivot:
+
+| Tab | One row per | Columns |
+|---|---|---|
+| `Daily` | date | `date, revenue_usd, impressions, ecpm_usd, partners, rows, rejected, qa_status` |
+| `By partner` | date, partner | `date, partner, revenue_usd, impressions, ecpm_usd, dod_change_pct, rejected, reject_pct` |
+| `By site` | date, site | `date, site, revenue_usd, impressions, ecpm_usd` |
+| `By ad unit` | date, ad unit | `date, ad_unit, revenue_usd, impressions, ecpm_usd` |
+
+`qa_status` is the worst QA result for the date (`fail`, `warn`, `pass`), or `not run`. `rows` and `rejected` count
+rows loaded and rejected. `dod_change_pct` and `reject_pct` are in percent (`10.15` = +10.15%, `30` = 30% of rows received).
+An empty cell means there is no value: eCPM with 0 impressions, or no previous day to compare with.
+The run exits non-zero on bad config, an API error, or when nothing is loaded for the date (and then changes nothing).
+
+**It is a dry run unless `SHEETS_MODE=google`.** The dry run writes the same tabs, merged the same way, to
+`out/sheets/daily.csv`, `by-partner.csv`, `by-site.csv` and `by-ad-unit.csv`, and prints a summary. Running
+2026-11-23, 24 and 25, then 25 again, leaves the files byte-for-byte unchanged by the re-run:
+
+```
+Sheets 2026-11-25 -> .../out/sheets (dry run; set SHEETS_MODE=google with SHEETS_SPREADSHEET_ID and GOOGLE_SERVICE_ACCOUNT_JSON to write the sheet)
+  Daily         1 row(s) for 2026-11-25 (replaced 1), 3 data row(s) in the tab
+  By partner    2 row(s) for 2026-11-25 (replaced 2), 6 data row(s) in the tab
+  By site       3 row(s) for 2026-11-25 (replaced 3), 9 data row(s) in the tab
+  By ad unit    3 row(s) for 2026-11-25 (replaced 3), 9 data row(s) in the tab
+QA status for 2026-11-25: warn
+```
+
+### Connecting a real Google Sheet later
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create (or pick) a project and enable the **Google Sheets API** (APIs & Services → Library).
+2. Create a **service account** (IAM & Admin → Service accounts). It needs no project roles. Under Keys, add a JSON key and download it. Keep it out of git: `secrets/` is git-ignored.
+3. Create the spreadsheet and **share it with the service account's `client_email`** (in the key file) as **Editor**. The tabs are created on the first run. An existing tab with one of these names must be empty or have the same header, or the run stops without writing anything.
+4. Set `SHEETS_SPREADSHEET_ID` (from the sheet URL `docs.google.com/spreadsheets/d/<ID>/edit`) and `GOOGLE_SERVICE_ACCOUNT_JSON` (the key file path locally; in GitHub Actions, a secret holding the key JSON itself), then `SHEETS_MODE=google`.
+5. Run `npm run sheets -- <date>`. A 403 means the sheet is not shared with the service account or the API is not enabled; the error says which account to share with.
+
+Design decisions:
+
+- **Read, replace the date, write back.** Each run reads every tab, drops that date's rows, adds the new ones, sorts by date and writes the whole tab back. A tab grows by a handful of rows a day, so rewriting it is cheap, and the result is the same however often or in whatever order dates are published. Appending would duplicate on a re-run, and editing ranges in place would break when a day has a different number of partners or sites than before. The merge (`src/sheets/merge.ts`) is shared by the sheet and the dry-run CSVs.
+- **One write, nothing stale.** All tabs are written in one `values:batchUpdate` request. The write is padded with empty strings to cover the cells the tab had before, so a date that now has fewer rows leaves nothing behind, without a clear-then-write step that could lose the other dates if it failed half-way.
+- **Never scramble someone else's tab.** All tabs are read before anything is written. If a tab's header is not the expected one, the run stops and writes nothing.
+- **Numbers are numbers.** Values are sent with `valueInputOption=RAW`: money, counts, eCPM and percentages are JSON numbers, and the date stays the text `2026-11-25` (Sheets would otherwise turn it into a date serial, and the merge keys on it). Apply number formats in the sheet as you like; the run does not touch formatting.
+- **No new dependency.** The Google client is about 200 lines (`src/sheets/google-auth.ts`, `google-sheets.ts`): a service-account JWT signed RS256 with `node:crypto`, exchanged at `oauth2.googleapis.com/token` for a token with the `spreadsheets` scope, then the Sheets REST API v4 with `fetch`. `googleapis` would add a large dependency tree for four HTTP calls.
+- **Config is checked before any work,** and `SHEETS_MODE` other than empty, `dry-run` or `google` is an error, so a typo never silently skips the sheet.
+- **Last writer wins.** Two runs at the same moment could overwrite each other's date. The stage 8 schedule runs once a day, so there is no lock.
+- **Tests.** Row building, the merge (replace a date, insert in order, other dates untouched, foreign header), config validation, the JWT (verified against a throwaway RSA key generated in the test) and token exchange, and the Sheets calls against an in-memory fake of the API, including re-runs, a date with fewer rows, and 403 errors. No test calls Google.
 
 ## Glossary
 

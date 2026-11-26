@@ -19,7 +19,7 @@ flowchart LR
         SQL["Stage 5 · SQL analysis<br/>views + npm run report<br/>eCPM · day over day · rejects"]:::done
         QA["Stage 6 · QA checks<br/>src/qa/ · qa_results<br/>pass / warn / fail"]:::done
         AL["Alerts<br/>GitHub Issues<br/>one per date · qa-alert"]:::done
-        GS["Stage 7 · Google Sheets<br/>daily summary"]:::next
+        GS["Stage 7 · Google Sheets<br/>src/sheets/ · 4 tabs<br/>replace date · dry run to CSV"]:::done
 
         A --> ING
         B --> ING
@@ -29,6 +29,7 @@ flowchart LR
         VAL -- bad rows --> REJ
         PG --> SQL --> GS
         SQL --> QA
+        QA -. qa_status .-> GS
         REJ --> PG
         QA --> AL
     end
@@ -57,7 +58,7 @@ Green is built, orange should be fixed before moving on, blue is next, and grey 
 | Postgres load | `src/load/`, `src/lib/db.ts` | ✅ Built | Read the clean zone; per partner-day, one transaction deletes and re-inserts `revenue_daily` and `rejected_rows`; refuses files with mismatched `raw_key` |
 | SQL analysis | `db/migrations/002_analysis_views.sql`, `src/report/` | ✅ Built | Views for daily totals, revenue and eCPM by partner, site and ad unit, partner day-over-day, and reject share; `npm run report` prints one day (query and formatting kept separate for stage 7) |
 | QA checks & alerts | `src/qa/`, `db/migrations/003_qa.sql` | ✅ Built | Pure checks over the stage 5 views (missing partner-day, reject share, day-over-day swing, zero totals) with env thresholds; results replace the date in `qa_results`; `npm run qa` exits non-zero on a fail; alerts as one GitHub Issue per date (comment if open, close on pass), sent only when `QA_ALERTS=github`, otherwise a dry run |
-| Google Sheets | — | ⏳ Stage 7 | Push the daily summary |
+| Google Sheets | `src/sheets/` | ✅ Built (dry run until connected) | `npm run sheets` writes `Daily`, `By partner`, `By site`, `By ad unit` tabs from `fetchDailyReport` plus the worst `qa_results` status; each run reads the tabs, replaces the date's rows, sorts by date and writes back in one request. Service-account JWT (RS256, `node:crypto`) + Sheets API v4 with `fetch`, no dependency. Google only when `SHEETS_MODE=google`; otherwise the same merge into `out/sheets/*.csv` |
 | Scheduler | `.github/workflows/` | ⏳ Stage 8 | Run the whole chain every day |
 
 ## Canonical row (stage 3 output)
@@ -103,6 +104,7 @@ eCPM is `analysis_ecpm(revenue, impressions)` = `revenue * 1000 / NULLIF(impress
 3. ✅ **Stage 4: Postgres load.** `pg`, a plain SQL migration and runner, and `npm run load`. Each partner-day is replaced in one transaction (delete + insert), so re-runs never duplicate revenue.
 4. ✅ **Stage 5: SQL analysis.** Re-runnable views in `002_analysis_views.sql` (eCPM `NULL` on 0 impressions, day-over-day against the previous calendar day, reject share) and `npm run report -- <date>`.
 5. ✅ **Stage 6: QA checks and alerts.** `npm run qa -- <date>` checks the day through `fetchDailyReport`, stores results in `qa_results` (`003_qa.sql`), and exits non-zero on a fail. Alerts are GitHub Issues (the user's choice) via the REST API with `fetch`, deduplicated by title, and only sent when `QA_ALERTS=github`.
-6. **Stages 7–8**, in order: Google Sheets (reuses `fetchDailyReport`), daily schedule. The schedule needs hosted S3 and Postgres plus repository secrets, runs `npm run qa` with `QA_ALERTS=github` and `issues: write`, and uses its exit code.
+6. ✅ **Stage 7: Google Sheets.** `npm run sheets -- <date>` reuses `fetchDailyReport` and the worst `qa_results` status, and replaces the date's rows in four tabs (read, merge, write back). Service-account auth and the Sheets REST API with `fetch`, no dependency. A dry run to `out/sheets/*.csv` until `SHEETS_MODE=google` with `SHEETS_SPREADSHEET_ID` and `GOOGLE_SERVICE_ACCOUNT_JSON`.
+7. **Stage 8: daily schedule.** Needs hosted S3 and Postgres plus repository secrets. Runs the chain, then `npm run qa` with `QA_ALERTS=github` and `issues: write`, and `npm run sheets` with `SHEETS_MODE=google` and the key JSON as a secret, and uses the exit codes.
 
-The details listed for stages 7–8 are a proposal and may change as those stages are built.
+The details listed for stage 8 are a proposal and may change as it is built.

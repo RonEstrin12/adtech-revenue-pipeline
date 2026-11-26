@@ -52,6 +52,25 @@ curl -H "x-api-key: dev-partner-a-key" "http://localhost:4001/api/v1/reports?dat
 npm run partner-b -- 2026-11-24   # writes inbox/partner-b/report_2026-11-24.csv
 ```
 
+## Configuration
+
+All settings are environment variables in `.env`, which is git-ignored. `.env.example` lists every variable with a working local-dev value.
+
+| Variable | Used by | Default (local dev) | What it does |
+|---|---|---|---|
+| `PARTNER_A_PORT` | mock partner A, ingest | `4001` | Port the Partner A mock API listens on; ingest's default URL uses it |
+| `PARTNER_A_URL` | ingest | `http://localhost:4001` | Base URL of Partner A. Set it for a real partner |
+| `PARTNER_A_API_KEY` | mock partner A, ingest | `dev-partner-a-key` | Value of the `x-api-key` header |
+| `PARTNER_A_TIMEOUT_MS` | ingest | `30000` | Time limit per fetch attempt; up to 3 attempts |
+| `S3_ENDPOINT` | ingest, validate, load, raw:ls | `http://localhost:9090` | S3Mock locally. Leave unset in production to use AWS S3 |
+| `S3_REGION` | ingest, validate, load, raw:ls | `us-east-1` | S3 region |
+| `S3_BUCKET` | ingest, validate, load, raw:ls | `raw` | Bucket for the raw zone and the `clean/` prefix |
+| `AWS_ACCESS_KEY_ID` | ingest, validate, load, raw:ls | `dev` | S3 credentials (dummy for S3Mock) |
+| `AWS_SECRET_ACCESS_KEY` | ingest, validate, load, raw:ls | `dev` | S3 credentials (dummy for S3Mock) |
+| `FX_ILS_PER_USD` | validate | `3.7` | ⚠️ to confirm. Fixed ILS→USD rate in shekels per dollar (USD = ILS / rate) |
+| `REPORT_TZ` | ingest, validate, load, report, mock partner B | `UTC` | ⚠️ to confirm. IANA timezone that decides "yesterday" when no date is given |
+| `DATABASE_URL` | migrate, load, report | `postgres://pipeline:pipeline@localhost:5432/adtech` | Postgres connection. The standard `PG*` variables work instead |
+
 ## The mock partners
 
 Both partners sell the same three sites (`news.co.il`, `sports.co.il`, `recipes.co.il`) across three ad units

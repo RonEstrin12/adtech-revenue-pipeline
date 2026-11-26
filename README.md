@@ -13,13 +13,16 @@ and pushes a daily summary to Google Sheets.
                                   rejected_rows
 ```
 
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture and the work order.
+
 ## Status
 
 | Stage | What | Status |
 |---|---|---|
 | 1 | Mock partners with realistic dirty data | ✅ |
 | 2 | Ingest raw files to S3 | ✅ |
-| 3 | Validate and normalize | ⏳ |
+| – | Harden ingest: re-run safety, fetch timeout, strict dates, tests | ✅ |
+| 3 | Validate and normalize | ✅ |
 | 4 | Idempotent load to Postgres | ⏳ |
 | 5 | SQL analysis | ⏳ |
 | 6 | QA checks and alerts | ⏳ |
@@ -83,10 +86,68 @@ Design decisions:
 
 - **Keep the original, untouched.** If a cleaning bug shows up later, we re-run from raw instead of asking the partner to resend, and we can prove what the partner actually sent.
 - **Append-only, deduplicated by content.** Every upload stores a sha256 of the file. If the newest file for that partner and day has the same hash, the run skips the upload, so re-running a day is safe and cheap. A corrected report from a partner gets a new `fetched_at` file next to the old one.
-- **Retries only where they help.** Partner A is retried on network errors and 5xx with exponential backoff, but not on 4xx (a wrong key or bad date will not fix itself).
+- **Retries only where they help.** Partner A is retried on network errors, timeouts and 5xx with exponential backoff, but not on 4xx (a wrong key or bad date will not fix itself).
 - **One partner failing does not block the others.** The run still exits non-zero, so the scheduler and alerts notice.
-- **Processed files leave the inbox.** After upload, partner B's file moves to `inbox/partner-b/processed/`, so the inbox only shows what still needs handling.
+- **Processed files leave the inbox.** After upload, partner B's file moves to `inbox/partner-b/processed/`, so the inbox only shows what still needs handling. Re-running that day reads the copy in `processed/` and reports it as unchanged.
 - **Same code locally and in production.** Locally `S3_ENDPOINT` points at S3Mock; in production it is unset and the AWS SDK talks to real S3.
+
+### Hardening the ingest
+
+```bash
+npm test          # unit tests (node --test + tsx), no Docker needed
+npm run typecheck
+```
+
+Design decisions:
+
+- **Re-runs never fail on a processed file.** If partner B's file is no longer in the inbox but is in `processed/`, ingest re-sends it through the same sha256 dedup, so it comes back `unchanged` (or is restored if the raw zone lost it). A new file in the inbox always wins, so a corrected report is stored as a new version.
+- **Every partner call has a deadline.** Each partner A attempt times out after `PARTNER_A_TIMEOUT_MS` (default 30s), covering both the response and the body. A timeout counts as retryable, so a hung partner costs at most about 3 × timeout instead of blocking the run forever.
+- **Strict dates.** `src/lib/dates.ts` only accepts days that exist on the calendar, so `2026-02-30` and partner B's `2026-13-45` are rejected instead of rolling over. It also holds `ddMmYyyyToIso` for partner B's `DD/MM/YYYY`, ready for stage 3.
+- **The mock partners are the test fixtures.** Tests run against the seeded partner B CSV and a local HTTP server that hangs, fails or rejects on cue. S3 is replaced with an in-memory store that follows the same dedup rule.
+
+## Stage 3: validate and normalize
+
+```bash
+npm run ingest -- 2026-11-25      # raw files must be in S3 first
+npm run validate -- 2026-11-25    # defaults to yesterday
+```
+
+Each partner's latest raw file for the day is mapped to one canonical row
+(`date, partner, site, ad_unit, impressions, revenue_usd, raw_key`; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+The output goes to a `clean/` zone in the same bucket, partitioned like raw:
+
+```
+s3://raw/clean/partner=b/date=2026-11-25/rows.json       clean rows, ready for stage 4
+s3://raw/clean/partner=b/date=2026-11-25/rejected.json   rejected rows: original row + reason + raw_key
+```
+
+The run prints clean and rejected counts per partner and per reason, and exits non-zero if a partner's raw file is missing or unreadable.
+
+| Problem | Partner | Handling | Reason code |
+|---|---|---|---|
+| `"  News.co.il "` | A | trimmed and lowercased | – |
+| `rev_usd: null` | A | rejected | `missing_revenue` |
+| Duplicate row | A, B | first kept, repeat rejected | `duplicate` (`duplicate_conflict` if the numbers differ) |
+| Negative impressions | B | rejected | `negative_impressions` |
+| `₪699.45` | B | symbol stripped; must match the `Currency` column | `currency_mismatch` if not |
+| `2026-13-45` | B | rejected (strict `DD/MM/YYYY`) | `invalid_date` |
+| Revenue in ILS | B | converted to USD | `unknown_currency` for anything but ILS/USD |
+
+Other checks: a row dated another day (`date_mismatch`), a blank site (`missing_site`), an ad unit outside
+`top_banner`/`sidebar`/`video_mid` (`unknown_ad_unit`), and non-numeric or negative numbers.
+
+Design decisions:
+
+- **Clean is derived, so it is overwritten.** The clean files have fixed keys per partner and day. Re-running a day replaces them, so it never duplicates rows. Raw stays append-only and untouched.
+- **Latest raw file wins.** When a partner sends a corrected report, the next run validates the newest `fetched_at` file. Both output files record the `raw_key` they came from.
+- **Reject the row, not the file.** One bad row goes to `rejected.json` with its reason, and the rest of the day still loads. A file that cannot be parsed at all (bad JSON, missing CSV columns) fails that partner loudly instead.
+- **Dedupe on the load key.** Rows are deduplicated on `(date, site, ad_unit)` after normalization, the same key stage 4 upserts on, so `News.co.il` and `news.co.il` collapse into one row.
+- **Lineage.** Every clean row carries `raw_key`, and every rejected row keeps the record exactly as the partner sent it.
+
+Decisions still open (defaults are easy to change):
+
+- **ILS→USD rate.** A fixed rate from `FX_ILS_PER_USD` (shekels per dollar, default `3.7`). All conversion goes through `loadFxRates(date)` in `src/lib/fx.ts`, so a daily rate source can replace it in one place. The rate used is printed and saved as `fx_source` in `rows.json`.
+- **Reporting timezone.** `REPORT_TZ` (IANA name, default `UTC`) decides which day "yesterday" is when no date is given, for both `ingest` and `validate`. For an Israeli publisher, `Asia/Jerusalem` is the likely answer.
 
 ## Glossary
 

@@ -10,7 +10,9 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { generateTraffic, isIsoDate, yesterday } from "./generate.js";
+import { pathToFileURL } from "node:url";
+import { isIsoDate, yesterday } from "../lib/dates.js";
+import { generateTraffic } from "./generate.js";
 
 const ILS_PER_USD = 3.7; // the rate partner B used when converting to ILS
 
@@ -38,14 +40,17 @@ export function buildPartnerBCsv(date: string): string {
   return [header, ...rows].map((r) => r.map(quote).join(",")).join("\n") + "\n";
 }
 
-const date = process.argv[2] ?? yesterday();
-if (!isIsoDate(date)) {
-  console.error("Usage: npm run partner-b -- YYYY-MM-DD");
-  process.exit(1);
-}
+// Run as a script (not when imported, e.g. by tests that use the CSV as a fixture).
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  const date = process.argv[2] ?? yesterday();
+  if (!isIsoDate(date)) {
+    console.error("Usage: npm run partner-b -- YYYY-MM-DD");
+    process.exit(1);
+  }
 
-const dir = join("inbox", "partner-b");
-mkdirSync(dir, { recursive: true });
-const file = join(dir, `report_${date}.csv`);
-writeFileSync(file, buildPartnerBCsv(date));
-console.log(`Partner B dropped ${file}`);
+  const dir = join("inbox", "partner-b");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `report_${date}.csv`);
+  writeFileSync(file, buildPartnerBCsv(date));
+  console.log(`Partner B dropped ${file}`);
+}

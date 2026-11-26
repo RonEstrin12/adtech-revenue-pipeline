@@ -6,8 +6,10 @@
     "partner-a": "tsx --env-file=.env src/mock-partners/partner-a-server.ts",
     "partner-b": "tsx src/mock-partners/partner-b-drop.ts",
     "ingest": "tsx --env-file=.env src/ingest/index.ts",
+    "validate": "tsx --env-file=.env src/validate/index.ts",
     "raw:ls": "tsx --env-file=.env src/tools/raw-ls.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "keywords": [],
   "author": "",

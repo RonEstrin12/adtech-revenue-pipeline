@@ -2,27 +2,44 @@
  * Ingest partner B: pick up its CSV from the inbox folder and store it as-is in S3.
  * After a successful upload the file moves to inbox/partner-b/processed/,
  * so the inbox only ever shows what still needs handling.
+ *
+ * Re-running a day whose file was already processed is safe: the copy in
+ * processed/ goes through the same sha256 dedup, so it comes back "unchanged"
+ * (or is stored again if the raw zone somehow lost it).
  */
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { putRaw, type RawPutResult } from "../lib/s3.js";
 
-const INBOX = join("inbox", "partner-b");
+const DEFAULT_INBOX = join("inbox", "partner-b");
 
 export class MissingFileError extends Error {}
 
-export async function ingestPartnerB(date: string): Promise<RawPutResult> {
-  const file = join(INBOX, `report_${date}.csv`);
-  if (!existsSync(file)) throw new MissingFileError(`no file at ${file}`);
+export interface PartnerBOptions {
+  inbox?: string;
+  put?: typeof putRaw;
+}
 
-  const body = readFileSync(file, "utf-8");
-  const result = await putRaw(`partner=b/date=${date}`, "csv", body, {
+export async function ingestPartnerB(date: string, opts: PartnerBOptions = {}): Promise<RawPutResult> {
+  const { inbox = DEFAULT_INBOX, put = putRaw } = opts;
+  const name = `report_${date}.csv`;
+  const processedDir = join(inbox, "processed");
+  const file = join(inbox, name);
+  const processedFile = join(processedDir, name);
+
+  // A new file in the inbox wins: it may be a corrected report.
+  const source = existsSync(file) ? file : existsSync(processedFile) ? processedFile : null;
+  if (!source) throw new MissingFileError(`no file at ${file} (or in ${processedDir})`);
+
+  const body = readFileSync(source, "utf-8");
+  const result = await put(`partner=b/date=${date}`, "csv", body, {
     source: "partner-b-file",
-    "original-name": `report_${date}.csv`,
+    "original-name": name,
   });
 
-  const processed = join(INBOX, "processed");
-  mkdirSync(processed, { recursive: true });
-  renameSync(file, join(processed, `report_${date}.csv`));
+  if (source === file) {
+    mkdirSync(processedDir, { recursive: true });
+    renameSync(file, processedFile);
+  }
   return result;
 }

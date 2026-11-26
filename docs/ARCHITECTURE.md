@@ -17,9 +17,9 @@ flowchart LR
         REJ[("rejected.json<br/>row + reason + raw_key")]:::done
         PG[("Stage 4 · Postgres<br/>replace partner-day<br/>revenue_daily · rejected_rows")]:::done
         SQL["Stage 5 · SQL analysis<br/>views + npm run report<br/>eCPM · day over day · rejects"]:::done
-        QA["Stage 6 · QA checks"]:::next
-        AL["Alerts"]:::later
-        GS["Stage 7 · Google Sheets<br/>daily summary"]:::later
+        QA["Stage 6 · QA checks<br/>src/qa/ · qa_results<br/>pass / warn / fail"]:::done
+        AL["Alerts<br/>GitHub Issues<br/>one per date · qa-alert"]:::done
+        GS["Stage 7 · Google Sheets<br/>daily summary"]:::next
 
         A --> ING
         B --> ING
@@ -56,7 +56,7 @@ Green is built, orange should be fixed before moving on, blue is next, and grey 
 | Postgres schema | `db/migrations/`, `src/lib/migrate.ts` | ✅ Built | Plain SQL migrations recorded in `schema_migrations`; `npm run migrate` |
 | Postgres load | `src/load/`, `src/lib/db.ts` | ✅ Built | Read the clean zone; per partner-day, one transaction deletes and re-inserts `revenue_daily` and `rejected_rows`; refuses files with mismatched `raw_key` |
 | SQL analysis | `db/migrations/002_analysis_views.sql`, `src/report/` | ✅ Built | Views for daily totals, revenue and eCPM by partner, site and ad unit, partner day-over-day, and reject share; `npm run report` prints one day (query and formatting kept separate for stage 7) |
-| QA checks & alerts | — | ⏳ Stage 6 | Missing partner-days, rejected-row share, day-over-day revenue swings |
+| QA checks & alerts | `src/qa/`, `db/migrations/003_qa.sql` | ✅ Built | Pure checks over the stage 5 views (missing partner-day, reject share, day-over-day swing, zero totals) with env thresholds; results replace the date in `qa_results`; `npm run qa` exits non-zero on a fail; alerts as one GitHub Issue per date (comment if open, close on pass), sent only when `QA_ALERTS=github`, otherwise a dry run |
 | Google Sheets | — | ⏳ Stage 7 | Push the daily summary |
 | Scheduler | `.github/workflows/` | ⏳ Stage 8 | Run the whole chain every day |
 
@@ -79,6 +79,7 @@ Green is built, orange should be fixed before moving on, blue is next, and grey 
 | `revenue_daily` | `(partner, date, site, ad_unit)` | canonical row + `fx_source`, `loaded_at`; `revenue_usd NUMERIC(18,6)` |
 | `rejected_rows` | `id`, indexed on `(partner, date)` | `partner, date, reason, detail, raw_key, line, original_row JSONB, loaded_at` |
 | `schema_migrations` | `version` | applied migration files |
+| `qa_results` (stage 6) | `id`, unique on `(date, check, partner)` | `status` (pass/warn/fail), `message`, `details JSONB`, `checked_at`; replaced per date |
 
 ## Analysis views (stage 5)
 
@@ -101,6 +102,7 @@ eCPM is `analysis_ecpm(revenue, impressions)` = `revenue * 1000 / NULLIF(impress
 2. ✅ **Stage 3: validate and normalize.** Built with a fixed ILS→USD rate (`FX_ILS_PER_USD`) and a configurable reporting timezone (`REPORT_TZ`, default UTC); both still need the user's decision.
 3. ✅ **Stage 4: Postgres load.** `pg`, a plain SQL migration and runner, and `npm run load`. Each partner-day is replaced in one transaction (delete + insert), so re-runs never duplicate revenue.
 4. ✅ **Stage 5: SQL analysis.** Re-runnable views in `002_analysis_views.sql` (eCPM `NULL` on 0 impressions, day-over-day against the previous calendar day, reject share) and `npm run report -- <date>`.
-5. **Stages 6–8**, in order: QA checks and alerts (can read `v_partner_day_over_day` and `v_reject_summary`), Google Sheets (reuses `fetchDailyReport`), daily schedule. The schedule needs hosted S3 and Postgres plus repository secrets.
+5. ✅ **Stage 6: QA checks and alerts.** `npm run qa -- <date>` checks the day through `fetchDailyReport`, stores results in `qa_results` (`003_qa.sql`), and exits non-zero on a fail. Alerts are GitHub Issues (the user's choice) via the REST API with `fetch`, deduplicated by title, and only sent when `QA_ALERTS=github`.
+6. **Stages 7–8**, in order: Google Sheets (reuses `fetchDailyReport`), daily schedule. The schedule needs hosted S3 and Postgres plus repository secrets, runs `npm run qa` with `QA_ALERTS=github` and `issues: write`, and uses its exit code.
 
-The details listed for stages 6–8 are a proposal and may change as those stages are built.
+The details listed for stages 7–8 are a proposal and may change as those stages are built.

@@ -27,7 +27,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture and t
 | 5 | SQL analysis | ✅ |
 | 6 | QA checks and alerts | ✅ |
 | 7 | Google Sheets report | ✅ |
-| 8 | Daily schedule with GitHub Actions | ⏳ |
+| 8 | Daily schedule with GitHub Actions | ✅ |
 
 ## Quick start
 
@@ -346,6 +346,41 @@ Design decisions:
 - **Config is checked before any work,** and `SHEETS_MODE` other than empty, `dry-run` or `google` is an error, so a typo never silently skips the sheet.
 - **Last writer wins.** Two runs at the same moment could overwrite each other's date. The stage 8 schedule runs once a day, so there is no lock.
 - **Tests.** Row building, the merge (replace a date, insert in order, other dates untouched, foreign header), config validation, the JWT (verified against a throwaway RSA key generated in the test) and token exchange, and the Sheets calls against an in-memory fake of the API, including re-runs, a date with fewer rows, and 403 errors. No test calls Google.
+
+## Stage 8: daily schedule with GitHub Actions
+
+Two workflows:
+
+| Workflow | Runs | What it does |
+|---|---|---|
+| `.github/workflows/ci.yml` | every PR and every push to `master` | `npm run typecheck` and `npm test`, with Postgres as a service so the integration suites run |
+| `.github/workflows/daily.yml` | daily at 05:00 UTC, or manually (Actions → Daily pipeline → Run workflow, optional date) | the whole chain for one date: mock partners → ingest → validate → migrate + load → report → qa → sheets |
+
+The report is added to the run summary. If QA fails, the run fails and a `QA alert: <date>` issue is opened.
+
+### Settings
+
+None of these are needed for the demo mode.
+
+| Name | Kind | Effect |
+|---|---|---|
+| `DATABASE_URL` | secret | Use a hosted Postgres instead of the job's service container |
+| `S3_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | secrets | Use hosted S3 instead of S3Mock. For AWS, set the regional endpoint, e.g. `https://s3.us-east-1.amazonaws.com` |
+| `S3_BUCKET`, `S3_REGION` | variables | Override `raw` and `us-east-1` |
+| `QA_ALERTS` | variable | `off` turns the GitHub Issue alerts into a dry run |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | secret | The service-account key JSON. Its presence switches `sheets` to `SHEETS_MODE=google` |
+| `SHEETS_SPREADSHEET_ID` | variable | The target spreadsheet |
+
+Set them under Settings → Secrets and variables → Actions.
+
+Design decisions:
+
+- **Demo mode first.** Postgres and S3Mock run as service containers in the job, so the schedule works with no account outside GitHub. The cost is that nothing persists between runs: every run starts from an empty database, so the day-over-day check has no previous day to compare with. Setting the hosted secrets switches to persistent storage with no code change, because the code only reads `DATABASE_URL` and the `S3_*` variables.
+- **Mock partners in the schedule.** The partners are still the mocks, so the run starts the Partner A mock API and has Partner B drop its file. Replacing them with real integrations only changes those two steps.
+- **One step per stage.** The Actions UI shows which stage failed, and each step uses the same `npm run` command as locally. `.env` is copied from `.env.example` and the workflow's env overrides it (`--env-file` never overrides variables already set).
+- **The sheet still runs after a QA fail.** A failing QA step fails the run (and opens the issue), but `sheets` still runs as long as the load succeeded, so the sheet shows the day with its `fail` status rather than skipping it.
+- **Least privilege.** `daily.yml` gets `contents: read` and `issues: write`, and `ci.yml` gets `contents: read`. Runs don't overlap (`concurrency`), so two runs never write the same date at once.
+- **Scheduled runs only fire from the default branch.** The workflow starts running daily once it is on `master`.
 
 ## Glossary
 

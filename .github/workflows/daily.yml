@@ -15,11 +15,11 @@ name: Daily pipeline
 
 on:
   schedule:
-    - cron: "0 5 * * *" # 05:00 UTC, after partners publish yesterday's reports
+    - cron: "0 5 * * *" # 05:00 UTC = 07:00/08:00 in Israel, after partners publish yesterday's reports
   workflow_dispatch:
     inputs:
       date:
-        description: "Report date (YYYY-MM-DD). Empty = yesterday (UTC)."
+        description: "Report date (YYYY-MM-DD). Empty = yesterday in Israel time."
         required: false
 
 permissions:
@@ -58,7 +58,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY || 'dev' }}
       S3_BUCKET: ${{ vars.S3_BUCKET || 'raw' }}
       S3_REGION: ${{ vars.S3_REGION || 'us-east-1' }}
-      REPORT_TZ: UTC
+      REPORT_TZ: Asia/Jerusalem
       # Stage 6: real GitHub Issue alerts. Set the variable QA_ALERTS to "off" to dry-run.
       QA_ALERTS: ${{ vars.QA_ALERTS == 'off' && 'dry-run' || 'github' }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -81,7 +81,7 @@ jobs:
         env:
           INPUT_DATE: ${{ inputs.date }}
         run: |
-          d="${INPUT_DATE:-$(date -u -d yesterday +%F)}"
+          d="${INPUT_DATE:-$(TZ="$REPORT_TZ" date -d yesterday +%F)}"
           echo "date=$d" >> "$GITHUB_OUTPUT"
           echo "Report date: $d" >> "$GITHUB_STEP_SUMMARY"
 

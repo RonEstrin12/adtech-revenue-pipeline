@@ -101,7 +101,7 @@ eCPM is `analysis_ecpm(revenue, impressions)` = `revenue * 1000 / NULLIF(impress
    - Add a timeout to the Partner A fetch (`src/ingest/partner-a.ts`).
    - Move date helpers to `src/lib/dates.ts` with strict parsing.
    - Add a `test` script.
-2. ✅ **Stage 3: validate and normalize.** Built with a fixed ILS→USD rate (`FX_ILS_PER_USD`) and a configurable reporting timezone (`REPORT_TZ`, default UTC); both still need the user's decision.
+2. ✅ **Stage 3: validate and normalize.** Built with a fixed ILS→USD rate (`FX_ILS_PER_USD`) and a configurable reporting timezone (`REPORT_TZ`, Israel time). The fixed rate is good enough for now.
 3. ✅ **Stage 4: Postgres load.** `pg`, a plain SQL migration and runner, and `npm run load`. Each partner-day is replaced in one transaction (delete + insert), so re-runs never duplicate revenue.
 4. ✅ **Stage 5: SQL analysis.** Re-runnable views in `002_analysis_views.sql` (eCPM `NULL` on 0 impressions, day-over-day against the previous calendar day, reject share) and `npm run report -- <date>`.
 5. ✅ **Stage 6: QA checks and alerts.** `npm run qa -- <date>` checks the day through `fetchDailyReport`, stores results in `qa_results` (`003_qa.sql`), and exits non-zero on a fail. Alerts are GitHub Issues (the user's choice) via the REST API with `fetch`, deduplicated by title, and only sent when `QA_ALERTS=github`.

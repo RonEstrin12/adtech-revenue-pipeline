@@ -25,7 +25,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture and t
 | 3 | Validate and normalize | ✅ |
 | 4 | Idempotent load to Postgres | ✅ |
 | 5 | SQL analysis | ✅ |
-| 6 | QA checks and alerts | ⏳ |
+| 6 | QA checks and alerts | ✅ |
 | 7 | Google Sheets report | ⏳ |
 | 8 | Daily schedule with GitHub Actions | ⏳ |
 
@@ -68,8 +68,16 @@ All settings are environment variables in `.env`, which is git-ignored. `.env.ex
 | `AWS_ACCESS_KEY_ID` | ingest, validate, load, raw:ls | `dev` | S3 credentials (dummy for S3Mock) |
 | `AWS_SECRET_ACCESS_KEY` | ingest, validate, load, raw:ls | `dev` | S3 credentials (dummy for S3Mock) |
 | `FX_ILS_PER_USD` | validate | `3.7` | ⚠️ to confirm. Fixed ILS→USD rate in shekels per dollar (USD = ILS / rate) |
-| `REPORT_TZ` | ingest, validate, load, report, mock partner B | `UTC` | ⚠️ to confirm. IANA timezone that decides "yesterday" when no date is given |
-| `DATABASE_URL` | migrate, load, report | `postgres://pipeline:pipeline@localhost:5432/adtech` | Postgres connection. The standard `PG*` variables work instead |
+| `REPORT_TZ` | ingest, validate, load, report, qa, mock partner B | `UTC` | ⚠️ to confirm. IANA timezone that decides "yesterday" when no date is given |
+| `DATABASE_URL` | migrate, load, report, qa | `postgres://pipeline:pipeline@localhost:5432/adtech` | Postgres connection. The standard `PG*` variables work instead |
+| `QA_EXPECTED_PARTNERS` | qa | `a,b` | Comma-separated partners that must have rows every day |
+| `QA_WARN_REJECT_SHARE` | qa | `0.25` | Warn when a partner's rejected share of rows received is above this fraction |
+| `QA_MAX_REJECT_SHARE` | qa | `0.4` | Fail when a partner's rejected share is above this fraction |
+| `QA_WARN_DOD_CHANGE_PCT` | qa | `25` | Warn when a partner's revenue moves more than this many percent vs the previous day, either way |
+| `QA_MAX_DOD_CHANGE_PCT` | qa | `50` | Fail when a partner's revenue moves more than this many percent vs the previous day |
+| `QA_ALERTS` | qa | unset (dry run) | `github` sends alerts as GitHub Issues; anything else only prints the issue it would send |
+| `GITHUB_TOKEN` | qa | unset | Token with `issues: write`, used only when `QA_ALERTS=github`. Provided by GitHub Actions |
+| `GITHUB_REPOSITORY` | qa | unset | `owner/repo` for alert issues, used only when `QA_ALERTS=github`. Provided by GitHub Actions |
 
 ## The mock partners
 
@@ -237,6 +245,49 @@ Design decisions:
 - **Reject share of rows received.** `reject_share = rejected / (rejected + loaded)` for the partner-day, and `reason_share` is the same per reason. Shares are fractions (`0.2` = 20%).
 - **Data and printing are separate.** `src/report/query.ts` returns a typed `DailyReport`; `src/report/format.ts` turns it into text. Stage 7 will reuse the query for Google Sheets.
 - **Tests.** The formatter is unit-tested with injected rows. `src/report/integration.test.ts` inserts hand-written rows into a throwaway schema and checks every view against hand-computed values, including 0 impressions, a gap in the days, and a previous revenue of 0. It skips itself without Docker.
+
+## Stage 6: QA checks and alerts
+
+```bash
+npm run migrate                   # applies 003_qa.sql (qa_results)
+npm run qa -- 2026-11-25          # defaults to yesterday, in REPORT_TZ
+```
+
+The checks read the stage 5 views through `fetchDailyReport` and each returns pass, warn or fail with a message:
+
+| Check | Per | Fails when | Warns when |
+|---|---|---|---|
+| `missing_partner_day` | expected partner | a partner in `QA_EXPECTED_PARTNERS` has no rows in `revenue_daily` (the message says if all its rows were rejected) | – |
+| `reject_share` | partner | rejected share of rows received > `QA_MAX_REJECT_SHARE` (0.4) | > `QA_WARN_REJECT_SHARE` (0.25) |
+| `day_over_day` | partner | revenue change vs the previous day beyond ±`QA_MAX_DOD_CHANGE_PCT` (50%) | beyond ±`QA_WARN_DOD_CHANGE_PCT` (25%), or revenue after a $0 day |
+| `zero_totals` | day and partner | nothing loaded, or revenue or impressions are 0 | – |
+
+A value equal to a limit is still inside it. Results go to `qa_results` (`date, check, partner, status, message, details jsonb, checked_at`),
+the run prints a summary, and it exits non-zero if any check fails. On the seeded days every check passes except
+partner B's 30% reject share, which warns, so the run exits 0:
+
+```
+  WARN    reject_share         b        partner b rejected 3 of 10 rows (30.0%) (warn above 25.0%)
+  pass    day_over_day         a        partner a: revenue +10.15% vs 2026-11-24 ($1,311.45 -> $1,444.60)
+Result: WARN (0 fail, 1 warn, 8 pass)
+```
+
+**Alerts are GitHub Issues** (the channel the user chose), sent with `fetch` to the REST API, so no new dependency:
+
+- One issue per date, titled `QA alert: 2026-11-25` with the label `qa-alert`. The body lists the fails, then the warnings.
+- If an open issue with that title exists, the run comments on it instead of opening another.
+- When a later run for that date has no fail, it comments on the open issue and closes it.
+- Warnings alone never alert.
+- **Nothing is sent unless `QA_ALERTS=github`**, with `GITHUB_TOKEN` and `GITHUB_REPOSITORY` set (GitHub Actions provides both). Otherwise the run prints the issue it would send. Try a failing day safely with a tight threshold: `QA_MAX_DOD_CHANGE_PCT=8 npm run qa -- 2026-11-25`.
+
+Design decisions:
+
+- **Checks are pure functions.** `src/qa/checks.ts` takes a `DailyReport` and a config and returns results, so every rule and boundary is unit-tested without a database. The query is the stage 5 one, unchanged.
+- **Thresholds chosen for the seeded data.** The mock partners reject 20% and 30% of rows by design, so a fail level below 30% would fail every day and train people to ignore it. 25% warns about partner B, and 40% fails only when a file is clearly broken. Seeded revenue moves between -20% and +10% a day, so 25% / 50% separate normal movement from a lost site or a currency mistake.
+- **Re-runs replace the date.** One transaction deletes the date's `qa_results` rows and inserts the new ones; a unique index on `(date, check, partner)` backs this up.
+- **The first day is not a swing.** With no previous day (or after a gap) `day_over_day` passes and says so; a missing partner is caught by `missing_partner_day` instead.
+- **Exit code first, then alert.** Results are stored before alerting, and a failed alert also exits non-zero, so the scheduler notices either way.
+- **Tests.** Each check, with boundaries; the issue logic (create, comment on an open issue, close on pass, no alert on warnings, dry run) against a fake `fetch`; and `src/qa/integration.test.ts` for `qa_results` idempotency in a throwaway schema, skipped without Docker.
 
 ## Glossary
 

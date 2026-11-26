@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fakeClient } from "../lib/fake-db.js";
 import type { QaResult } from "./checks.js";
-import { QA_SQL, saveQaResults } from "./store.js";
+import { QA_SQL, QA_STATUS_SQL, fetchWorstQaStatus, saveQaResults } from "./store.js";
 
 const RESULTS: QaResult[] = [
   { check: "zero_totals", partner: null, status: "pass", message: "ok", details: { impressions: 1 } },
@@ -22,5 +22,14 @@ describe("saveQaResults", () => {
     const client = fakeClient({ failOn: /INSERT INTO qa_results/ });
     await assert.rejects(saveQaResults(client, "2026-11-25", RESULTS), /boom/);
     assert.equal(client.log.at(-1)!.text, "ROLLBACK");
+  });
+});
+
+describe("fetchWorstQaStatus", () => {
+  it("returns the status the query computes, or null when QA has not run for the date", async () => {
+    const ran = fakeClient({ respond: () => [{ status: "warn" }] });
+    assert.equal(await fetchWorstQaStatus(ran, "2026-11-25"), "warn");
+    assert.deepEqual(ran.log, [{ text: QA_STATUS_SQL, values: ["2026-11-25"] }]);
+    assert.equal(await fetchWorstQaStatus(fakeClient(), "2026-11-25"), null);
   });
 });

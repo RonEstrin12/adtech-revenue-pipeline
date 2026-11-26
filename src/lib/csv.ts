@@ -50,3 +50,14 @@ export function parseCsvRecords(text: string): { header: string[]; records: Reco
   const records = lines.map((cells) => Object.fromEntries(names.map((n, i) => [n, cells[i] ?? ""])));
   return { header: names, records };
 }
+
+/** One CSV field: quoted only when it holds a comma, quote, CR or LF ("" escapes a quote). */
+function csvField(value: string | number): string {
+  const s = String(value);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** Rows to RFC 4180 CSV with LF line ends and a trailing newline (the inverse of parseCsv). */
+export function toCsv(rows: (string | number)[][]): string {
+  return rows.map((r) => r.map(csvField).join(",")).join("\n") + (rows.length > 0 ? "\n" : "");
+}

@@ -24,7 +24,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture and t
 | – | Harden ingest: re-run safety, fetch timeout, strict dates, tests | ✅ |
 | 3 | Validate and normalize | ✅ |
 | 4 | Idempotent load to Postgres | ✅ |
-| 5 | SQL analysis | ⏳ |
+| 5 | SQL analysis | ✅ |
 | 6 | QA checks and alerts | ⏳ |
 | 7 | Google Sheets report | ⏳ |
 | 8 | Daily schedule with GitHub Actions | ⏳ |
@@ -180,6 +180,44 @@ Design decisions:
 - **Exact money.** `revenue_usd` is `NUMERIC` and is sent as a decimal string, so sums never pick up float noise. Postgres also checks that impressions and revenue are not negative.
 - **Plain SQL migrations, no ORM.** `db/migrations/*.sql` run in name order, each in its own transaction, and are recorded in `schema_migrations`.
 - **Tests without and with Docker.** The SQL and the transaction order are unit-tested against a fake client. `src/load/integration.test.ts` loads the seeded days into a throwaway schema of the local Postgres, and skips itself when the database is unreachable.
+
+## Stage 5: SQL analysis
+
+```bash
+npm run migrate                   # applies 002_analysis_views.sql (safe to re-run)
+npm run report -- 2026-11-25      # defaults to yesterday, in REPORT_TZ
+```
+
+`db/migrations/002_analysis_views.sql` adds views on top of `revenue_daily` and `rejected_rows`:
+
+| View | One row per | Columns |
+|---|---|---|
+| `v_daily_totals` | date | `revenue_usd, impressions, ecpm_usd, partner_count, row_count` |
+| `v_daily_by_partner` | date, partner | `revenue_usd, impressions, ecpm_usd, row_count` |
+| `v_daily_by_site` | date, site | `revenue_usd, impressions, ecpm_usd, partner_count` |
+| `v_daily_by_ad_unit` | date, ad unit | `revenue_usd, impressions, ecpm_usd, partner_count` |
+| `v_partner_day_over_day` | date, partner | `revenue_usd, prev_date, prev_revenue_usd, revenue_change_usd, revenue_change_pct` |
+| `v_reject_summary` | date, partner, reason | `rejected, partner_rejected, loaded, reason_share, reject_share` |
+
+The report prints totals, then revenue, impressions and eCPM by partner, site and ad unit, then day-over-day
+and rejects. It exits non-zero when nothing is loaded for the date. From the real data:
+
+```
+Day over day (revenue vs the previous day)
+  partner    revenue   previous    change  change %
+  a        $1,444.60  $1,311.45  +$133.15   +10.15%
+  b          $763.72    $829.92   -$66.20    -7.98%
+```
+
+Design decisions:
+
+- **Views, not tables.** The numbers are always computed from the current `revenue_daily`, so a re-load of a day is reflected at once and there is nothing to refresh. `CREATE OR REPLACE` keeps the file re-runnable.
+- **eCPM never divides by zero.** `analysis_ecpm()` is `revenue * 1000 / NULLIF(impressions, 0)`, so eCPM is `NULL` (printed `n/a`) when impressions are 0. It is computed from the summed revenue and impressions, not by averaging row eCPMs.
+- **Exact until display.** Money, eCPM and shares stay `NUMERIC` (eCPM and shares rounded to 6 decimals) and reach TypeScript as decimal strings; only the printer rounds to cents.
+- **Day over day means the previous calendar day.** `LAG` finds the partner's previous loaded day, but it only counts when it is exactly `date - 1`; after a gap, or on the first day, the change is `n/a`. The percentage is also `n/a` when the previous revenue was 0. A partner with no rows today has no row at all; that is a stage 6 QA check.
+- **Reject share of rows received.** `reject_share = rejected / (rejected + loaded)` for the partner-day, and `reason_share` is the same per reason. Shares are fractions (`0.2` = 20%).
+- **Data and printing are separate.** `src/report/query.ts` returns a typed `DailyReport`; `src/report/format.ts` turns it into text. Stage 7 will reuse the query for Google Sheets.
+- **Tests.** The formatter is unit-tested with injected rows. `src/report/integration.test.ts` inserts hand-written rows into a throwaway schema and checks every view against hand-computed values, including 0 impressions, a gap in the days, and a previous revenue of 0. It skips itself without Docker.
 
 ## Glossary
 

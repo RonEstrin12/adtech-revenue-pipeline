@@ -9,27 +9,14 @@ import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { fixedRates } from "../lib/fx.js";
 import { migrate, readMigrations } from "../lib/migrate.js";
+import { TEST_DATABASE_URL as URL, postgresSkipReason } from "../lib/pg-test.js";
 import { buildPartnerAReport } from "../mock-partners/partner-a-server.js";
 import { buildPartnerBCsv } from "../mock-partners/partner-b-drop.js";
 import { type Store, validatePartnerDay } from "../validate/run.js";
 import { type PartnerDay, loadPartnerDay, readPartnerDay } from "./run.js";
 
-const URL = process.env.DATABASE_URL ?? "postgres://pipeline:pipeline@localhost:5432/adtech";
 const DATE = "2026-11-25";
 const SCHEMA = `test_load_${process.pid}_${Date.now()}`;
-
-async function reachable(): Promise<string | false> {
-  const probe = new pg.Client({ connectionString: URL, connectionTimeoutMillis: 1500 });
-  probe.on("error", () => {});
-  try {
-    await probe.connect();
-    return false;
-  } catch (err) {
-    return `Postgres not reachable (${(err as Error).message || (err as Error).name}); start it with docker compose up -d`;
-  } finally {
-    await probe.end().catch(() => {});
-  }
-}
 
 async function seededDays(): Promise<Record<string, PartnerDay>> {
   const objects = new Map<string, string>([
@@ -51,7 +38,7 @@ async function seededDays(): Promise<Record<string, PartnerDay>> {
   return days;
 }
 
-const skip = await reachable();
+const skip = await postgresSkipReason();
 
 describe("load into Postgres (integration)", { skip }, () => {
   const client = new pg.Client({ connectionString: URL });
@@ -72,7 +59,8 @@ describe("load into Postgres (integration)", { skip }, () => {
     await client.connect();
     await client.query(`CREATE SCHEMA ${SCHEMA}`);
     await client.query(`SET search_path TO ${SCHEMA}`);
-    assert.deepEqual(await migrate(client, await readMigrations()), ["001_init.sql"]);
+    const all = await readMigrations();
+    assert.deepEqual(await migrate(client, all), all.map((m) => m.version));
     days = await seededDays();
   });
 

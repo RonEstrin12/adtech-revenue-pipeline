@@ -10,6 +10,10 @@ describe("readMigrations", () => {
     assert.match(ms[0]!.sql, /CREATE TABLE revenue_daily/);
     assert.match(ms[0]!.sql, /PRIMARY KEY \(partner, date, site, ad_unit\)/);
     assert.match(ms[0]!.sql, /CREATE TABLE rejected_rows/);
+    assert.equal(ms[1]!.version, "002_analysis_views.sql");
+    // Views must be re-runnable: no plain CREATE VIEW / CREATE FUNCTION.
+    assert.doesNotMatch(ms[1]!.sql, /CREATE (VIEW|FUNCTION)/);
+    assert.match(ms[1]!.sql, /NULLIF\(impressions, 0\)/);
   });
 });
 

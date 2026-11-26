@@ -46,13 +46,24 @@ describe("ddMmYyyyToIso", () => {
 
 describe("yesterday", () => {
   it("is the previous UTC day, across month and year ends", () => {
-    assert.equal(yesterday(new Date("2026-11-25T10:00:00Z")), "2026-11-24");
-    assert.equal(yesterday(new Date("2026-03-01T00:30:00Z")), "2026-02-28");
-    assert.equal(yesterday(new Date("2026-01-01T23:59:00Z")), "2025-12-31");
+    assert.equal(yesterday(new Date("2026-11-25T10:00:00Z"), "UTC"), "2026-11-24");
+    assert.equal(yesterday(new Date("2026-03-01T00:30:00Z"), "UTC"), "2026-02-28");
+    assert.equal(yesterday(new Date("2026-01-01T23:59:00Z"), "UTC"), "2025-12-31");
   });
 
   it("returns a valid ISO date by default", () => {
     assert.equal(isIsoDate(yesterday()), true);
+  });
+
+  it("defaults to Israel time when REPORT_TZ is unset", () => {
+    const saved = process.env.REPORT_TZ;
+    delete process.env.REPORT_TZ;
+    try {
+      // 22:30 UTC on Nov 25 is already Nov 26 in Israel.
+      assert.equal(yesterday(new Date("2026-11-25T22:30:00Z")), "2026-11-25");
+    } finally {
+      if (saved !== undefined) process.env.REPORT_TZ = saved;
+    }
   });
 });
 

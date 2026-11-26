@@ -68,7 +68,7 @@ All settings are environment variables in `.env`, which is git-ignored. `.env.ex
 | `AWS_ACCESS_KEY_ID` | ingest, validate, load, raw:ls | `dev` | S3 credentials (dummy for S3Mock) |
 | `AWS_SECRET_ACCESS_KEY` | ingest, validate, load, raw:ls | `dev` | S3 credentials (dummy for S3Mock) |
 | `FX_ILS_PER_USD` | validate | `3.7` | ⚠️ to confirm. Fixed ILS→USD rate in shekels per dollar (USD = ILS / rate) |
-| `REPORT_TZ` | ingest, validate, load, report, qa, sheets, mock partner B | `UTC` | ⚠️ to confirm. IANA timezone that decides "yesterday" when no date is given |
+| `REPORT_TZ` | ingest, validate, load, report, qa, sheets, mock partner B | `Asia/Jerusalem` | IANA timezone that decides "yesterday" when no date is given |
 | `DATABASE_URL` | migrate, load, report, qa, sheets | `postgres://pipeline:pipeline@localhost:5432/adtech` | Postgres connection. The standard `PG*` variables work instead |
 | `QA_EXPECTED_PARTNERS` | qa | `a,b` | Comma-separated partners that must have rows every day |
 | `QA_WARN_REJECT_SHARE` | qa | `0.25` | Warn when a partner's rejected share of rows received is above this fraction |
@@ -178,7 +178,7 @@ Design decisions:
 Decisions still open (defaults are easy to change):
 
 - **ILS→USD rate.** A fixed rate from `FX_ILS_PER_USD` (shekels per dollar, default `3.7`). All conversion goes through `loadFxRates(date)` in `src/lib/fx.ts`, so a daily rate source can replace it in one place. The rate used is printed and saved as `fx_source` in `rows.json`.
-- **Reporting timezone.** `REPORT_TZ` (IANA name, default `UTC`) decides which day "yesterday" is when no date is given, for both `ingest` and `validate`. For an Israeli publisher, `Asia/Jerusalem` is the likely answer.
+- **Reporting timezone.** `REPORT_TZ` (IANA name, default `Asia/Jerusalem`) decides which day "yesterday" is when no date is given. The publisher is Israeli, so the day follows Israel time.
 
 ## Stage 4: idempotent load to Postgres
 

@@ -33,11 +33,11 @@ export function ddMmYyyyToIso(value: string): string | null {
  * The day before `now` in YYYY-MM-DD, as a calendar day in `timeZone`
  * (partners report the previous day).
  *
- * DECISION TO CONFIRM: the reporting timezone. It comes from REPORT_TZ (an IANA name
- * such as "Asia/Jerusalem") and defaults to UTC, which was the behaviour before it
- * became configurable. It only changes which day a run defaults to when no date is given.
+ * The reporting timezone comes from REPORT_TZ (an IANA name) and defaults to
+ * Asia/Jerusalem, the publisher's day. It only changes which day a run defaults to
+ * when no date is given.
  */
-export function yesterday(now: Date = new Date(), timeZone: string = process.env.REPORT_TZ || "UTC"): string {
+export function yesterday(now: Date = new Date(), timeZone: string = process.env.REPORT_TZ || "Asia/Jerusalem"): string {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" })
     .formatToParts(now);
   const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);

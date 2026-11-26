@@ -23,7 +23,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture and t
 | 2 | Ingest raw files to S3 | ✅ |
 | – | Harden ingest: re-run safety, fetch timeout, strict dates, tests | ✅ |
 | 3 | Validate and normalize | ✅ |
-| 4 | Idempotent load to Postgres | ⏳ |
+| 4 | Idempotent load to Postgres | ✅ |
 | 5 | SQL analysis | ⏳ |
 | 6 | QA checks and alerts | ⏳ |
 | 7 | Google Sheets report | ⏳ |
@@ -148,6 +148,38 @@ Decisions still open (defaults are easy to change):
 
 - **ILS→USD rate.** A fixed rate from `FX_ILS_PER_USD` (shekels per dollar, default `3.7`). All conversion goes through `loadFxRates(date)` in `src/lib/fx.ts`, so a daily rate source can replace it in one place. The rate used is printed and saved as `fx_source` in `rows.json`.
 - **Reporting timezone.** `REPORT_TZ` (IANA name, default `UTC`) decides which day "yesterday" is when no date is given, for both `ingest` and `validate`. For an Israeli publisher, `Asia/Jerusalem` is the likely answer.
+
+## Stage 4: idempotent load to Postgres
+
+```bash
+npm run validate -- 2026-11-25    # clean zone must be written first
+npm run migrate                   # create or update the tables (safe to re-run)
+npm run load -- 2026-11-25        # defaults to yesterday
+```
+
+Needs `DATABASE_URL` in `.env` (see `.env.example`; the standard `PG*` variables also work).
+The run prints rows loaded and rejected per partner, and the total `revenue_usd` stored for the day:
+
+```
+  ✅ partner A: 8 rows loaded, 2 rejected, revenue_usd 1444.600000
+  ✅ partner B: 7 rows loaded, 3 rejected, revenue_usd 763.720271
+Total: 15 rows loaded, 5 rejected
+Total revenue_usd in revenue_daily for 2026-11-25: 2208.320271
+```
+
+| Table | Key | Contents |
+|---|---|---|
+| `revenue_daily` | `(partner, date, site, ad_unit)` | `impressions`, `revenue_usd NUMERIC(18,6)`, `raw_key`, `fx_source`, `loaded_at` |
+| `rejected_rows` | `id`, indexed on `(partner, date)` | `reason`, `detail`, `raw_key`, `line`, `original_row JSONB`, `loaded_at` |
+| `schema_migrations` | `version` | which files in `db/migrations/` have run |
+
+Design decisions:
+
+- **Replace the partner-day, in one transaction.** Each partner-day is loaded as: lock, delete that partner-day from both tables, insert. A re-run gives identical counts and sums, and a corrected file that has fewer rows does not leave stale rows behind, which a plain upsert would. If any statement fails, the transaction rolls back and the previous load stays as it was.
+- **Refuse inconsistent input.** `rows.json` and `rejected.json` are written separately by stage 3, so both must carry the same `raw_key`, and every row must belong to that partner, day and raw file. Otherwise the partner-day is not loaded and the run exits non-zero; re-running `validate` fixes it.
+- **Exact money.** `revenue_usd` is `NUMERIC` and is sent as a decimal string, so sums never pick up float noise. Postgres also checks that impressions and revenue are not negative.
+- **Plain SQL migrations, no ORM.** `db/migrations/*.sql` run in name order, each in its own transaction, and are recorded in `schema_migrations`.
+- **Tests without and with Docker.** The SQL and the transaction order are unit-tested against a fake client. `src/load/integration.test.ts` loads the seeded days into a throwaway schema of the local Postgres, and skips itself when the database is unreachable.
 
 ## Glossary
 

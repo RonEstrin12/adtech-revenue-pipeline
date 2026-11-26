@@ -15,8 +15,8 @@ flowchart LR
         VAL["Stage 3 · Validate & normalize<br/>src/validate/"]:::done
         CLEAN[("S3 clean zone<br/>clean/partner=/date=/<br/>rows.json")]:::done
         REJ[("rejected.json<br/>row + reason + raw_key")]:::done
-        PG[("Stage 4 · Postgres<br/>upsert on partner·date·site·unit")]:::next
-        SQL["Stage 5 · SQL analysis<br/>daily revenue views"]:::later
+        PG[("Stage 4 · Postgres<br/>replace partner-day<br/>revenue_daily · rejected_rows")]:::done
+        SQL["Stage 5 · SQL analysis<br/>daily revenue views"]:::next
         QA["Stage 6 · QA checks"]:::later
         AL["Alerts"]:::later
         GS["Stage 7 · Google Sheets<br/>daily summary"]:::later
@@ -29,7 +29,7 @@ flowchart LR
         VAL -- bad rows --> REJ
         PG --> SQL --> GS
         PG --> QA
-        REJ --> QA
+        REJ --> PG
         QA --> AL
     end
 
@@ -53,7 +53,8 @@ Green is built, orange should be fixed before moving on, blue is next, and grey 
 | S3 clean zone | `src/lib/s3.ts` | ✅ Built | `clean/partner=/date=/rows.json` and `rejected.json`, fixed keys so re-runs overwrite |
 | Validate & normalize | `src/validate/` | ✅ Built | Map both formats to one canonical row from the latest raw file; write clean and rejected rows (with reason) to the S3 `clean/` zone, overwritten per partner-day |
 | FX | `src/lib/fx.ts` | ✅ Built (fixed rate) | ILS→USD via `loadFxRates(date)`; fixed `FX_ILS_PER_USD` until a daily source is chosen |
-| Postgres load | — | ⏳ Stage 4 | Read the clean zone; idempotent load keyed on partner, date, site and ad unit; load rejected rows for QA |
+| Postgres schema | `db/migrations/`, `src/lib/migrate.ts` | ✅ Built | Plain SQL migrations recorded in `schema_migrations`; `npm run migrate` |
+| Postgres load | `src/load/`, `src/lib/db.ts` | ✅ Built | Read the clean zone; per partner-day, one transaction deletes and re-inserts `revenue_daily` and `rejected_rows`; refuses files with mismatched `raw_key` |
 | SQL analysis | — | ⏳ Stage 5 | Daily revenue and eCPM by site, ad unit and partner |
 | QA checks & alerts | — | ⏳ Stage 6 | Missing partner-days, rejected-row share, day-over-day revenue swings |
 | Google Sheets | — | ⏳ Stage 7 | Push the daily summary |
@@ -71,6 +72,14 @@ Green is built, orange should be fixed before moving on, blue is next, and grey 
 | `revenue_usd` | numeric | Currency symbols stripped; ILS converted to USD at `FX_ILS_PER_USD` (fixed for now) |
 | `raw_key` | text | S3 key of the source file, for lineage |
 
+## Warehouse tables (stage 4)
+
+| Table | Key | Columns |
+|---|---|---|
+| `revenue_daily` | `(partner, date, site, ad_unit)` | canonical row + `fx_source`, `loaded_at`; `revenue_usd NUMERIC(18,6)` |
+| `rejected_rows` | `id`, indexed on `(partner, date)` | `partner, date, reason, detail, raw_key, line, original_row JSONB, loaded_at` |
+| `schema_migrations` | `version` | applied migration files |
+
 ## Work order
 
 1. ✅ **Harden ingest.**
@@ -79,7 +88,7 @@ Green is built, orange should be fixed before moving on, blue is next, and grey 
    - Move date helpers to `src/lib/dates.ts` with strict parsing.
    - Add a `test` script.
 2. ✅ **Stage 3: validate and normalize.** Built with a fixed ILS→USD rate (`FX_ILS_PER_USD`) and a configurable reporting timezone (`REPORT_TZ`, default UTC); both still need the user's decision.
-3. **Stage 4: Postgres load.** Add `pg`, a schema and a migration. Read `clean/` rows and rejected rows; replace a partner-day on reload so re-runs never duplicate revenue.
+3. ✅ **Stage 4: Postgres load.** `pg`, a plain SQL migration and runner, and `npm run load`. Each partner-day is replaced in one transaction (delete + insert), so re-runs never duplicate revenue.
 4. **Stages 5–8**, in order: SQL analysis, QA checks and alerts, Google Sheets, daily schedule. The schedule needs hosted S3 and Postgres plus repository secrets.
 
 The details listed for stages 5–8 are a proposal and may change as those stages are built.
